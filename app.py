@@ -2,141 +2,159 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import io
+import pypdf
+import docx
+from datetime import datetime
+import os
+# Import all three backend functions
+from gemini_app import get_student_analysis, extract_chart_data_from_text, get_chat_response
 
-def main():
-    """
-    Main function to run the Streamlit application.
-    """
-    # --- Page Configuration ---
-    # Set the page configuration for a wider layout, which is good for charts.
-    st.set_page_config(layout="wide")
-
-    # --- Data Initialization & Upload ---
-    # We start with some sample data, but allow the user to upload their own.
-    # Updated sample data to match the new 'course', 'period', 'score' model
-    sample_data = {
-        'course': ['Calculus', 'Calculus', 'Calculus', 'Data Structures', 'Data Structures', 'Spanish', 'Calculus', 'Data Structures', 'Spanish', 'Calculus', 'Calculus'],
-        'topic': ['Limits', 'Limits', 'Derivatives', 'Arrays', 'Linked Lists', 'Verb Conjugation', 'Limits', 'Arrays', 'Verb Conjugation', 'Derivatives', 'Limits'],
-        'period': ['Week 1', 'Week 2', 'Week 1', 'Week 1', 'Week 2', 'Month 1', 'Week 3', 'Week 3', 'Month 2', 'Week 2', 'Week 4'],
-        'score': [70, 75, 65, 80, 85, 90, 80, 92, 95, 70, 85]
-    }
-    df = pd.DataFrame(sample_data)
-
-    # Initialize session state for accumulated data if not already present
-    if 'all_progress_data' not in st.session_state:
-        st.session_state.all_progress_data = df
-
-    # --- File Uploader (Bonus Feature) ---
-    st.sidebar.header("Upload New Data")
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload new progress CSV or JSON data (must contain 'course', 'topic', 'period', 'score')",
-        type=['csv', 'json']
-    )
-
-    # If a user uploads a file, process it and append to existing data
-    if uploaded_file is not None:
+# --- Helper Functions ---
+def extract_text_from_files(uploaded_files):
+    """Extracts text from uploaded files."""
+    full_text = ""
+    for file in uploaded_files:
         try:
-            if uploaded_file.type == 'text/csv':
-                new_data = pd.read_csv(uploaded_file)
-            elif uploaded_file.type == 'application/json':
-                new_data = pd.read_json(uploaded_file)
-            else:
-                st.sidebar.error("Unsupported file type. Please upload CSV or JSON.")
-                new_data = pd.DataFrame() # Empty DataFrame if unsupported
-
-            # Basic validation for new data columns
-            required_columns = {'course', 'topic', 'period', 'score'}
-            if not required_columns.issubset(new_data.columns):
-                st.sidebar.error(f"Error: Uploaded file must contain the columns: {', '.join(required_columns)}")
-            else:
-                # Append new data and remove duplicates based on all columns
-                st.session_state.all_progress_data = pd.concat([st.session_state.all_progress_data, new_data]).drop_duplicates().reset_index(drop=True)
-                st.sidebar.success("Successfully uploaded and merged new data!")
-
+            if file.name.endswith('.pdf'):
+                pdf_reader = pypdf.PdfReader(io.BytesIO(file.getvalue()))
+                for page in pdf_reader.pages:
+                    full_text += page.extract_text() + "\n\n"
+            elif file.name.endswith('.docx'):
+                doc = docx.Document(io.BytesIO(file.getvalue()))
+                for para in doc.paragraphs:
+                    full_text += para.text + "\n"
+                full_text += "\n"
+            elif file.name.endswith('.txt'):
+                full_text += file.getvalue().decode('utf-8') + "\n\n"
         except Exception as e:
-            st.sidebar.error(f"Error processing file: {e}. Please ensure data is correctly formatted.")
+            st.error(f"Error reading file {file.name}: {e}")
+    return full_text
 
-    # Always use the current state of the data
-    current_df = st.session_state.all_progress_data.copy()
+def save_report_to_archive(report_content):
+    """Saves the generated report to the archive folder."""
+    if not os.path.exists("archive"):
+        os.makedirs("archive")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"archive/analysis_report_{timestamp}.md"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(report_content)
+    return filename
 
-    # --- UI Controls: Course Selection (Right of Chart) and Chart Display at Top ---
-    # Create two columns for layout: one for the chart, one for the selectbox
-    # This places the chart and its controls at the very top.
-    chart_col, selectbox_col = st.columns([4, 1]) # 4 parts for chart, 1 for selectbox
+def load_report_from_archive(filename):
+    """Loads a specific report from the archive."""
+    with open(filename, "r", encoding="utf-8") as f:
+        return f.read()
 
-    # Get a unique list of courses from the DataFrame to populate the dropdown.
-    course_list = current_df['course'].unique()
+# --- Main App ---
+def main():
+    st.set_page_config(page_title="Student AI Dashboard", page_icon="🚀", layout="wide")
 
-    with selectbox_col:
-        st.write("### Course Selector") # Small heading for the selector
-        selected_course = st.selectbox(
-            "Select a Course:",
-            course_list,
-            key="course_selector", # Unique key for the selectbox
-            label_visibility="collapsed" # Hide the label for compactness
-        )
+    # Initialize session state for report, chat, and chart data
+    if "analysis_report" not in st.session_state:
+        st.session_state.analysis_report = ""
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "chart_df" not in st.session_state:
+        st.session_state.chart_df = None
 
-    # Filter the DataFrame based on the selected course.
-    course_data = current_df[current_df['course'] == selected_course]
+    # --- Sidebar ---
+    with st.sidebar:
+        st.header("Controls")
 
-    # Sort data by period for proper line chart rendering
-    course_data['period_sort_key'] = course_data['period'].astype(str) # Convert to string for consistent sorting
-    course_data = course_data.sort_values(by=['period_sort_key', 'topic']).drop(columns=['period_sort_key'])
-
-
-    with chart_col:
-        # --- Chart Creation (Altair Multi-Line Chart) ---
-        if not course_data.empty:
-            chart_title = f"Progress by Topic – {selected_course}"
-            chart_caption = "Track your weekly/monthly understanding to stay motivated."
-
-            base = alt.Chart(course_data).encode(
-                # X-axis: Period
-                x=alt.X('period:N', sort=None, title='Period'), # 'sort=None' to use natural sort order of 'period' or sorted dataframe
-
-                # Y-axis: Score
-                y=alt.Y('score:Q', title='Understanding Level (0-100)', scale=alt.Scale(domain=[0, 100])),
-
-                # Color: One line per topic
-                color=alt.Color('topic:N', title='Topic'),
-
-                # Tooltips: Show topic, period, and score
-                tooltip=[
-                    alt.Tooltip('topic:N', title='Topic'),
-                    alt.Tooltip('period:N', title='Period'),
-                    alt.Tooltip('score:Q', title='Score', format='.1f')
-                ]
-            ).properties(
-                title=chart_title,
-                height=250 # Reduced height for a more compact appearance
-            ).interactive() # Enable zooming and panning
-
-            line_chart = base.mark_line(point=True).encode( # point=True ensures markers are shown
-                # No special trend highlighting requested for this specific graph style
+        with st.expander("1. Generate New Analysis", expanded=True):
+            uploaded_work_files = st.file_uploader(
+                "Upload Student Work Files",
+                type=['pdf', 'docx', 'txt'],
+                accept_multiple_files=True,
+                key="work_uploader"
             )
+            target_topics = st.text_area(
+                "Enter Course Topics",
+                height=150,
+                help="List all relevant topics for the course, one per line."
+            )
+            analyze_button = st.button("Generate Report", use_container_width=True)
 
-            st.altair_chart(line_chart, use_container_width=True)
-            st.caption(chart_caption) # Caption directly below the chart
+        with st.expander("2. View Past Reports"):
+            archive_dir = "archive"
+            if os.path.exists(archive_dir) and os.listdir(archive_dir):
+                archived_files = sorted(os.listdir(archive_dir), reverse=True)
+                selected_report = st.selectbox("Select a past report:", archived_files)
+                if st.button("Load Report", use_container_width=True):
+                    st.session_state.analysis_report = load_report_from_archive(os.path.join(archive_dir, selected_report))
+                    st.session_state.chat_history = []
+                    st.session_state.chart_df = None # Clear chart when loading old text report
+                    st.success(f"Loaded report: {selected_report}")
+            else:
+                st.info("No past reports found.")
 
+    # --- Main Content Area ---
+    st.title("🚀 AI-Powered Student Dashboard")
+
+    # --- Main button logic ---
+    if analyze_button:
+        if not uploaded_work_files or not target_topics:
+            st.warning("Please upload files and enter topics to generate a new report.")
         else:
-            st.warning(f"No data available for the selected course: {selected_course}.")
+            with st.spinner("AI is processing files and generating a full report..."):
+                student_work_text = extract_text_from_files(uploaded_work_files)
+                if student_work_text:
+                    st.session_state.chat_history = []
+                    
+                    # Call both backend functions
+                    chart_data_list = extract_chart_data_from_text(student_work_text)
+                    analysis_output = get_student_analysis(student_work_text, target_topics)
+                    
+                    # Store results in session state
+                    st.session_state.chart_df = pd.DataFrame(chart_data_list) if chart_data_list else None
+                    st.session_state.analysis_report = analysis_output
+                    
+                    if analysis_output and "Error:" not in analysis_output:
+                        saved_filename = save_report_to_archive(analysis_output)
+                        st.success(f"New analysis complete! Report saved to {saved_filename}")
+                    else:
+                        st.error(analysis_output or "Failed to generate the analysis.")
 
-    # --- Main Website Content Below the Chart ---
-    # General title and description moved below the chart section
-    st.title("📚 Learning Progress Tracker")
-    st.write("An interactive dashboard to visualize your knowledge growth over time, by topic.")
-    st.write("---") # Visual separator to distinguish the top section from main content
+    # --- Display Chart if available in session state ---
+    if st.session_state.chart_df is not None and not st.session_state.chart_df.empty:
+        st.header("📈 AI-Generated Progress Chart")
+        chart = alt.Chart(st.session_state.chart_df).mark_line(point=True).encode(
+            x=alt.X('period:N', sort=None, title='Assignment/Period'),
+            y=alt.Y('score:Q', title='Estimated Score (0-100)', scale=alt.Scale(domain=[0, 100])),
+            color=alt.Color('topic:N', title='Topic'),
+            tooltip=['course', 'topic', 'period', 'score']
+        ).properties(title="Student Progress Based on Uploaded Files").interactive()
+        st.altair_chart(chart, use_container_width=True)
+        st.divider()
 
+    # --- Display Analysis and Chat if a report exists in session state ---
+    if st.session_state.analysis_report:
+        st.header("🎓 Performance Analysis & Study Guide")
+        st.markdown(st.session_state.analysis_report)
+        st.divider()
 
-    # --- Bonus: Show/Hide Raw Data ---
-    # A checkbox to conditionally display the raw data table for the selected course.
-    show_data = st.checkbox(f"Show raw data for {selected_course}")
+        st.header("💬 Ask a Follow-up Question")
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    if show_data:
-        st.subheader(f"Raw Data for {selected_course}")
-        # Display the filtered data in a clean table.
-        st.dataframe(course_data)
+        if prompt := st.chat_input("Ask about this report..."):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
+            with st.spinner("Thinking..."):
+                api_history = [{"role": msg["role"], "parts": [msg["content"]]} for msg in st.session_state.chat_history]
+                response = get_chat_response(
+                    chat_history=api_history,
+                    latest_question=prompt,
+                    original_analysis=st.session_state.analysis_report
+                )
+                with st.chat_message("assistant"):
+                    st.markdown(response)
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+    elif not analyze_button:
+        st.info("Upload student work and click 'Generate Report' in the sidebar to get started.")
 
 if __name__ == "__main__":
     main()
