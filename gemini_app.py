@@ -1,160 +1,111 @@
-import streamlit as st
+import os
 import google.generativeai as genai
 from dotenv import load_dotenv
-import os
-import io
-import pypdf
-import docx
+import json
 
-def extract_text_from_files(uploaded_files):
-    """
-    Extracts text from a list of uploaded files (PDF, DOCX, TXT).
-    """
-    full_text = ""
-    for file in uploaded_files:
-        try:
-            if file.name.endswith('.pdf'):
-                pdf_reader = pypdf.PdfReader(io.BytesIO(file.getvalue()))
-                for page in pdf_reader.pages:
-                    full_text += page.extract_text() + "\n\n"
-            elif file.name.endswith('.docx'):
-                doc = docx.Document(io.BytesIO(file.getvalue()))
-                for para in doc.paragraphs:
-                    full_text += para.text + "\n"
-                full_text += "\n"
-            elif file.name.endswith('.txt'):
-                full_text += file.getvalue().decode('utf-8') + "\n\n"
-        except Exception as e:
-            st.error(f"Error reading file {file.name}: {e}")
-    return full_text
+def _get_configured_model(model_name='models/gemini-1.5-flash-latest'):
+    """Helper function to configure and return a Gemini model."""
+    load_dotenv()
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not found in .env file.")
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(model_name)
 
-def get_gemini_response(prompt):
+def extract_chart_data_from_text(student_work_text: str) -> list | None:
     """
-    Loads the API key from a .env file and generates a response from the Gemini API.
+    Uses AI to read unstructured text and extract structured data for a chart.
     """
     try:
-        # Load environment variables from your .env file
-        load_dotenv()
-        
-        # Get your API key from the loaded environment variables
-        api_key = os.getenv("GEMINI_API_KEY")
-        
-        if not api_key:
-            st.error("GEMINI_API_KEY not found in .env file. Please make sure the file and variable are correctly set.")
-            return None
+        model = _get_configured_model()
+        prompt = f"""
+        You are a data extraction specialist. Your task is to read the following text from a student's submitted work (homework, quizzes, exams) and extract structured data points for a progress chart.
 
-        # Configure the generative AI model with the API key
-        genai.configure(api_key=api_key)
-        
-        model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
+        For each distinct assignment or topic you can identify in the text, you must extract the following:
+        1. "course": The general subject (e.g., "Calculus", "Algebra", "Spanish").
+        2. "topic": The specific topic being tested (e.g., "Derivatives", "Factoring", "Verb Conjugation").
+        3. "period": The name of the assignment (e.g., "Homework 1", "Quiz 3", "Mid-term Exam").
+        4. "score": An estimated numerical score from 0 to 100 based on the content, instructor notes, and correctness of the answers.
+
+        You MUST return your findings as a JSON string representing a list of objects. Do not include any explanatory text or markdown formatting, only the raw JSON string.
+
+        Example output format:
+        [
+            {{"course": "Algebra", "topic": "Linear Equations", "period": "Homework 1", "score": 95}},
+            {{"course": "Algebra", "topic": "Word Problems", "period": "Quiz 1", "score": 60}}
+        ]
+
+        ---
+        **Student Work Content to Analyze:**
+        {student_work_text}
+        ---
+        """
         response = model.generate_content(prompt)
-        return response.text
-    
+        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(cleaned_response)
     except Exception as e:
-        st.error(f"An error occurred with the Gemini API: {e}")
+        print(f"ERROR in extract_chart_data_from_text: {e}")
         return None
 
-def main():
-    st.set_page_config(page_title="Student Performance Analyzer", page_icon=":mortar_board:", layout="wide")
+def get_student_analysis(student_work_text: str, target_topics: str) -> str | None:
+    """
+    Analyzes student work and generates a detailed study plan with study questions.
+    """
+    try:
+        model = _get_configured_model()
+        prompt = f"""
+        You are an expert educational analyst. Based on the following student work and list of topics, please perform a detailed three-part analysis.
 
-    st.title("🎓 Student Performance Analyzer & Study Planner")
-    st.write("Upload a student's past work and a list of topics to receive a detailed performance analysis, a forecast of future challenges, and a tailored study plan.")
+        **Part 1: Analyze Existing Weaknesses**
+        Analyze the provided student work to identify every area of underperformance. Then, present a ranked list of these topics from weakest to strongest.
 
-    # --- Sidebar for Inputs ---
-    with st.sidebar:
-        st.header("Inputs")
-        
-        # File uploader
-        uploaded_files = st.file_uploader(
-            "Upload Homework/Exam Files",
-            type=['pdf', 'docx', 'txt'],
-            accept_multiple_files=True,
-            help="Upload the student's past homework, exams, and any other relevant work."
-        )
+        **Part 2: Predict Future Challenges (Forecasted Problematic Topics)**
+        Using the ranked weakness profile from Part 1 and the full list of target topics, predict which upcoming subjects the student is most likely to struggle with. Provide a prioritized list of these future trouble spots.
 
-        # Text area for topics
-        target_topics = st.text_area(
-            "Enter Target Topics",
-            height=200,
-            help="List all relevant topics for the course or subject, one per line."
-        )
+        **Part 3: Generate a Tailored Study Plan**
+        Generate a concise and actionable study plan to address both the current weak areas and the predicted challenges. For each topic in the study plan, you must include the following four items in this order:
+        1.  **Key Concepts to Review:** A bulleted list of the most important concepts for that topic.
+        2.  **Recommended Practice Exercises:** Suggestions for types of problems or questions to practice.
+        3.  **Specific Study Questions:** Generate 2-3 targeted questions that directly test the key concepts for that topic.
+        4.  **Resource Links or Summaries:** Provide a relevant, high-quality resource link or a brief summary of the topic.
 
-        # Analyze button
-        analyze_button = st.button("Analyze Student Performance", use_container_width=True)
+        Please structure your entire output clearly with the following markdown headings:
+        ### 1. Ranked List of Existing Weaknesses
+        ### 2. Forecast of Future Trouble Spots
+        ### 3. Tailored Study Plan
 
-    # --- Main Area for Output ---
-    if analyze_button:
-        if not uploaded_files:
-            st.warning("Please upload at least one file of student work.")
-        elif not target_topics:
-            st.warning("Please enter the list of target topics.")
-        else:
-            with st.spinner("Analyzing student work and generating report... This may take a moment."):
-                # 1. Extract text from uploaded files
-                student_work_text = extract_text_from_files(uploaded_files)
+        ---
+        **Provided Student Work Content:**
+        {student_work_text}
+        ---
+        **Provided List of Target Topics:**
+        {target_topics}
+        ---
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"ERROR in get_student_analysis: {e}")
+        return f"An error occurred while contacting the Gemini API: {e}"
 
-                if student_work_text:
-                    # 2. Construct the prompt for the Gemini API
-                    prompt = f"""
-                    You are an expert educational analyst. Based on the following student work and list of topics, please perform a detailed three-part analysis.
+def get_chat_response(chat_history: list, latest_question: str, original_analysis: str) -> str:
+    """
+    Generates a contextual response for the chat feature.
+    """
+    try:
+        model = _get_configured_model()
+        chat = model.start_chat(history=chat_history)
+        contextual_prompt = f"""
+        CONTEXT: You are a helpful tutor. The user has just received the following analysis about their academic performance:
+        ---
+        {original_analysis}
+        ---
+        Now, please answer the user's follow-up question based on this context.
 
-                    **Part 1: Analyze Existing Weaknesses**
-                    Analyze the provided student work to identify every area of underperformance. Then, present a ranked list of these topics from weakest to strongest.
-
-                    **Part 2: Predict Future Challenges**
-                    Using the ranked weakness profile from Part 1 and the full list of target topics, predict which upcoming subjects the student is most likely to struggle with. Provide a prioritized list of these future trouble spots.
-
-                    **Part 3: Generate a Tailored Study Plan**
-                    Generate a concise and actionable study plan to address both the current weak areas and the predicted challenges. For each topic in the study plan, you must include:
-                    1.  **Key Concepts to Review:** A bulleted list of the most important concepts for that topic.
-                    2.  **Recommended Practice Exercises:** Suggestions for types of problems or questions to practice.
-                    3.  **Resource Links or Summaries:** Provide a relevant, high-quality resource link (like a Khan Academy or university page) or a brief summary of the topic if a link is not available.
-
-                    Please structure your entire output clearly with the following markdown headings:
-                    ### 1. Ranked List of Existing Weaknesses
-                    ### 2. Forecast of Future Trouble Spots
-                    ### 3. Tailored Study Plan
-
-                    ---
-                    **Provided Student Work Content:**
-                    {student_work_text}
-                    ---
-                    **Provided List of Target Topics:**
-                    {target_topics}
-                    ---
-                    """
-
-                    # 3. Get the response from the Gemini API
-                    gemini_output = get_gemini_response(prompt)
-
-                    # 4. Display the results
-                    if gemini_output:
-                        st.success("Analysis Complete!")
-                        
-                        # Use st.expander to neatly organize the output
-                        with st.expander("1. Ranked List of Existing Weaknesses", expanded=True):
-                            # A simple way to parse the section. Assumes the LLM follows instructions.
-                            try:
-                                weaknesses = gemini_output.split("### 2.")[0].split("### 1. Ranked List of Existing Weaknesses")[1]
-                                st.markdown(weaknesses)
-                            except IndexError:
-                                st.write("Could not parse this section from the response.")
-
-                        with st.expander("2. Forecast of Future Trouble Spots", expanded=True):
-                            try:
-                                forecast = gemini_output.split("### 3.")[0].split("### 2. Forecast of Future Trouble Spots")[1]
-                                st.markdown(forecast)
-                            except IndexError:
-                                st.write("Could not parse this section from the response.")
-
-                        with st.expander("3. Tailored Study Plan", expanded=True):
-                            try:
-                                study_plan = "### 3. Tailored Study Plan" + gemini_output.split("### 3. Tailored Study Plan")[1]
-                                st.markdown(study_plan, unsafe_allow_html=True)
-                            except IndexError:
-                                st.write("Could not parse this section from the response.")
-                    else:
-                        st.error("Failed to get a response from the analysis model.")
-
-if __name__ == "__main__":
-    main()
+        Question: {latest_question}
+        """
+        response = chat.send_message(contextual_prompt)
+        return response.text
+    except Exception as e:
+        print(f"ERROR in get_chat_response: {e}")
+        return f"Sorry, an error occurred while processing your chat message: {e}"

@@ -24,6 +24,8 @@ __pycache__/
 *.so
 
 # Ignore specific files
+app.py
+/archive/
 gemini_app.py
 
 # --- Distribution / packaging ---
