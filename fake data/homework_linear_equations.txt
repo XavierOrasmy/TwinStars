@@ -1,0 +1,23 @@
+Student Name: Alex
+Assignment: Homework - Linear Equations
+
+Problem 1: Solve for x in the equation 2x + 5 = 15
+Solution:
+2x = 15 - 5
+2x = 10
+x = 5
+Instructor's Note: Correct.
+
+Problem 2: Solve for y in 3(y - 2) = 9
+Solution:
+3y - 6 = 9
+3y = 15
+y = 5
+Instructor's Note: Correct. Great job distributing the 3.
+
+Problem 3: If 4a + 7 = 23, what is the value of a?
+Solution:
+4a = 23 - 7
+4a = 16
+a = 4
+Instructor's Note: Excellent.
